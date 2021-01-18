@@ -10,6 +10,8 @@
 #include "include/base/cef_bind.h"
 #include "include/wrapper/cef_closure_task.h"
 
+#include <thread>
+
 namespace cefpdf {
 
 Client::Client() :
@@ -34,6 +36,7 @@ Client::Client() :
     CefString(&m_browserSettings.default_encoding).FromString(constants::encoding);
     m_browserSettings.plugins = STATE_DISABLED;
     m_browserSettings.javascript_close_windows = STATE_DISABLED;
+    m_delay = 0;
 }
 
 int Client::ExecuteSubProcess(const CefMainArgs& mainArgs)
@@ -97,7 +100,7 @@ void Client::CreateBrowsers(unsigned int browserCount)
     while (m_pendingBrowsersCount > 0 && m_browsersCount <= constants::maxProcesses) {
         --m_pendingBrowsersCount;
         ++m_browsersCount;
-        CefBrowserHost::CreateBrowser(m_windowInfo, this, "", m_browserSettings, NULL);
+        CefBrowserHost::CreateBrowser(m_windowInfo, this, "", m_browserSettings, NULL, NULL);
     }
 }
 
@@ -110,7 +113,7 @@ CefRefPtr<CefBrowserProcessHandler> Client::GetBrowserProcessHandler()
 
 void Client::OnRegisterCustomSchemes(CefRawPtr<CefSchemeRegistrar> registrar)
 {
-    registrar->AddCustomScheme(constants::scheme, true, false, false, false, true, false);
+    registrar->AddCustomScheme(constants::scheme, CEF_SCHEME_OPTION_STANDARD);
 }
 
 void Client::OnBeforeCommandLineProcessing(const CefString& process_type, CefRefPtr<CefCommandLine> command_line)
@@ -182,6 +185,7 @@ CefRefPtr<CefRequestHandler> Client::GetRequestHandler()
 
 bool Client::OnProcessMessageReceived(
     CefRefPtr<CefBrowser> browser,
+    CefRefPtr<CefFrame> frame,
     CefProcessId source_process,
     CefRefPtr<CefProcessMessage> message
 ) {
@@ -243,6 +247,12 @@ void Client::OnLoadStart(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> fram
     CEF_REQUIRE_UI_THREAD();
 }
 
+void Client::Process(CefRefPtr<CefBrowser> browser)
+{
+   DLOG(INFO) << "Client::Process - generating PDF";
+   m_jobManager->Process(browser, 200);
+}
+
 void Client::OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int httpStatusCode)
 {
     DLOG(INFO)
@@ -253,7 +263,12 @@ void Client::OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
     CEF_REQUIRE_UI_THREAD();
 
     if (frame->IsMain()) {
-        m_jobManager->Process(browser, httpStatusCode);
+        if (httpStatusCode == 200 && m_delay > 0) {
+            DLOG(INFO) << "Client::OnLoadEnd - waiting for " << m_delay << "ms before generating PDF";
+            CefPostDelayedTask(TID_UI, base::Bind(&Client::Process, this, browser), m_delay);
+        }
+        else
+            m_jobManager->Process(browser, httpStatusCode);
     }
 }
 
@@ -282,6 +297,7 @@ bool Client::OnBeforeBrowse(
     CefRefPtr<CefBrowser> browser,
     CefRefPtr<CefFrame> frame,
     CefRefPtr<CefRequest> request,
+    bool user_gesture,
     bool is_redirect
 ) {
     DLOG(INFO) << "Client::OnBeforeBrowse";
@@ -306,6 +322,16 @@ void Client::OnRenderProcessTerminated(
     CefRequestHandler::TerminationStatus status
 ) {
     DLOG(INFO) << "Client::OnRenderProcessTerminated";
+}
+
+void Client::SetViewWidth(int viewWidth)
+{
+   m_renderHandler->SetViewWidth(viewWidth);
+}
+
+void Client::SetViewHeight(int viewHeight)
+{
+   m_renderHandler->SetViewHeight(viewHeight);
 }
 
 } // namespace cefpdf
